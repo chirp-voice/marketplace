@@ -2,10 +2,7 @@
   "mcpServers": {
     "chirp-channel": {
       "command": "npx",
-      "args": ["tsx", "${CLAUDE_PLUGIN_ROOT}/channel/chirp-channel.ts"],
-      "env": {
-        "CHIRP_RELAY_URL": "${user_config.relay_url}"
-      }
+      "args": ["tsx", "${CLAUDE_PLUGIN_ROOT}/channel/chirp-channel.ts"]
     }
   }
 }

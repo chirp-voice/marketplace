@@ -17,7 +17,7 @@ assistant can connect to.
 
 ```
 chirp-plugin/
-├── .claude-plugin/plugin.json       plugin manifest (channels binding + userConfig)
+├── .claude-plugin/plugin.json       plugin manifest (channels binding)
 ├── .claude-plugin/marketplace.json  serves this dir as a one-plugin marketplace
 ├── .mcp.json                    registers chirp-channel (via ${CLAUDE_PLUGIN_ROOT})
 ├── commands/chirp-auth.md       /chirp:chirp-auth
@@ -49,16 +49,16 @@ name from `marketplace.json`. Relative `source: "."` resolves to the marketplace
 root — works when added by local path or Git; a direct marketplace.json URL would
 instead need a `git-subdir` source.)
 
-**Relay selection.** Once installed, the relay comes from the `relay_url` userConfig (default
-**prod**, `wss://chirp-concierge.fly.dev/relay`). Point it at another stack without editing files:
+**Relay selection.** The prod relay (`wss://chirp-concierge.fly.dev/relay`) is **baked into the
+channel as the default** — there is deliberately no `userConfig`, so installing from the public
+marketplace never prompts for configuration. Point a dev machine at another stack with the
+`CHIRP_RELAY_URL` env var (the MCP server inherits the shell environment; `npm run channel`
+reads the same var):
 
+```sh
+export CHIRP_RELAY_URL=wss://api-dev.chirp.dev/relay   # dev stack
+export CHIRP_RELAY_URL=ws://localhost:8080/relay       # local concierge
 ```
-claude plugin install chirp@chirp-plugin --config 'relay_url=wss://api-dev.chirp.dev/relay'   # dev
-```
-
-or change it later via `/plugin configure`; the value persists across reinstalls. Running the channel
-script directly (`npm run channel`) instead reads the `CHIRP_RELAY_URL` env var (defaults to
-`ws://localhost:8080/relay`).
 
 ## Distribution — the public marketplace mirror
 

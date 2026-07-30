@@ -1,15 +1,7 @@
 {
   "name": "chirp",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Chirp — voice-first remote for your Claude Code sessions. Drives this session from the Chirp iOS app over a relay.",
-  "userConfig": {
-    "relay_url": {
-      "type": "string",
-      "title": "Chirp relay URL",
-      "description": "Websocket URL of the Chirp relay. Defaults to prod (wss://chirp-concierge.fly.dev/relay). For the dev stack set wss://api-dev.chirp.dev/relay; for a local concierge set ws://localhost:8080/relay. Override at install with --config 'relay_url=…' or via /plugin configure.",
-      "default": "wss://chirp-concierge.fly.dev/relay"
-    }
-  },
   "channels": [
     {
       "server": "chirp-channel"

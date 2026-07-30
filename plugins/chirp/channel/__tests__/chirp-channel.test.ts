@@ -166,7 +166,7 @@ describe('resolveMirrorPath — truncation reset (fix 2)', () => {
 describe('relay URL validation (fix 3)', () => {
   test('_relayUrlValidForTests reflects the baked default URL being valid', () => {
     // In the test environment CHIRP_RELAY_URL is unset, so we fall back to the
-    // baked default `ws://localhost:8080/relay` which is a valid URL.
+    // baked prod default, which is a valid URL.
     expect(_relayUrlValidForTests()).toBe(true)
   })
 

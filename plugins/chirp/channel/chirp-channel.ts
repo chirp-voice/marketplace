@@ -13,8 +13,10 @@ import type { TaskSnapshotFrame } from './frames.js'
 import { deriveLabel } from './label.js'
 import { getAccessToken } from '../auth/pkce-login.js'
 
-const RELAY_RAW = process.env.CHIRP_RELAY_URL ?? 'ws://localhost:8080/relay'
-// Validate at module load so a typo'd relay_url userConfig / CHIRP_RELAY_URL produces a clear
+// Prod relay baked as the default so installed users are never prompted for config;
+// CHIRP_RELAY_URL (inherited shell env) overrides for the dev stack / a local concierge.
+const RELAY_RAW = process.env.CHIRP_RELAY_URL ?? 'wss://chirp-concierge.fly.dev/relay'
+// Validate at module load so a typo'd CHIRP_RELAY_URL produces a clear
 // message and does not throw synchronously later from inside `new WebSocket(...)`.
 let RELAY: string
 let _relayUrlValid = true
@@ -22,7 +24,7 @@ try {
   new URL(RELAY_RAW) // throws on malformed URLs
   RELAY = RELAY_RAW
 } catch {
-  console.error(`[chirp-channel] invalid relay_url "${RELAY_RAW}" (set via CHIRP_RELAY_URL / relay_url userConfig) — relay disabled; MCP channel still active`)
+  console.error(`[chirp-channel] invalid relay URL "${RELAY_RAW}" (set via CHIRP_RELAY_URL) — relay disabled; MCP channel still active`)
   RELAY = ''
   _relayUrlValid = false
 }
