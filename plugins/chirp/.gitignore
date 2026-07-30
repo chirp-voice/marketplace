@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Per-env secret files (.env.dev, .env.local, …) — never commit secrets.
+.env*
+!.env.example

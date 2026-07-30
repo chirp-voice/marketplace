@@ -1,0 +1,14 @@
+{
+  "name": "chirp-voice",
+  "owner": {
+    "name": "PulseIQ Labs, Inc."
+  },
+  "description": "Chirp — voice-first remote for your Claude Code sessions.",
+  "plugins": [
+    {
+      "name": "chirp",
+      "source": "./plugins/chirp",
+      "description": "Connects a Claude Code session to the Chirp iOS app over the Chirp relay, so you can see and drive it by voice."
+    }
+  ]
+}
