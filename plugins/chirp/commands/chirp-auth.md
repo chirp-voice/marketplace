@@ -16,7 +16,7 @@ Run the auth CLI, passing through any arguments, then report its output to the u
   the dev stack). This blocks until the user finishes in the browser, so allow up to a few minutes (use a
   generous Bash timeout); if nothing completes the flow it times out after ~3 minutes with a clear message
   rather than hanging. On success the CLI prints a channel-launch hint — relay it to the user **verbatim**
-  so they know to start sessions with `claude --channels chirp`
+  so they know to start sessions with `claude --channels plugin:chirp@chirp-voice`
   (without the channel activated, the phone sees the session but voice prompts are silently dropped).
 - **`--status`** → shows whether you're signed in, and as whom.
 - **`--logout`** → clears the local credential (`~/.chirp/credentials.json`).

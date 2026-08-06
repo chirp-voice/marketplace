@@ -1,6 +1,6 @@
 {
   "name": "chirp",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Chirp — voice-first remote for your Claude Code sessions. Drives this session from the Chirp iOS app over a relay.",
   "channels": [
     {

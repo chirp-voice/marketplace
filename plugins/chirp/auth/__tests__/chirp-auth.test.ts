@@ -11,6 +11,6 @@ describe('parseAuthCommand', () => {
 
 describe('CHANNEL_LAUNCH_HINT', () => {
   test('tells you how to launch a session with the channel activated', () => {
-    expect(CHANNEL_LAUNCH_HINT).toContain('claude --channels chirp')
+    expect(CHANNEL_LAUNCH_HINT).toContain('claude --channels plugin:chirp@chirp-voice')
   })
 })

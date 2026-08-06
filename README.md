@@ -23,10 +23,10 @@ Sign in with the same account you use in the Chirp iOS app:
 Then start sessions with the channel activated:
 
 ```
-claude --channels chirp
+claude --channels plugin:chirp@chirp-voice
 ```
 
-Without `--channels chirp` the app can see the session, but voice prompts are
+Without the channel activated the app can see the session, but voice prompts are
 silently dropped.
 
 ## About this repo

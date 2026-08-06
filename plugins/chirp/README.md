@@ -99,8 +99,8 @@ This is the in-monorepo home for the plugin's source:
   baked as env-overridable defaults (`oauthConfig()`), so friends need **zero env**. Set
   `CLERK_OAUTH_BASE` / `CLERK_OAUTH_CLIENT_ID` to target the dev stack; `CLERK_OAUTH_CLIENT_SECRET`
   is optional (unused by the public client). A stalled sign-in times out after ~3 min instead of hanging.
-- **Channel activation:** installed users launch sessions with `claude --channels chirp`
-  (the `channels` manifest entry in plugin.json declares the channel);
+- **Channel activation:** installed users launch sessions with `claude --channels plugin:chirp@chirp-voice`
+  (plugin `chirp` from the `chirp-voice` public marketplace; the `channels` manifest entry in plugin.json declares the channel);
   `--dangerously-load-development-channels plugin:chirp@chirp-plugin` remains the
   live-source dev form.
 - **Hooks need a real install, not the channel flag.** The SessionStart hooks

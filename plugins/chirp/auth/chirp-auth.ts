@@ -9,7 +9,7 @@ export type AuthCommand = "login" | "status" | "logout";
  */
 export const CHANNEL_LAUNCH_HINT =
   "To let Chirp drive a Claude Code session, launch it with the channel activated:\n" +
-  "  claude --channels chirp";
+  "  claude --channels plugin:chirp@chirp-voice";
 
 /** Route argv to a command. --status takes precedence over --logout; default is login. */
 export function parseAuthCommand(argv: string[]): AuthCommand {
