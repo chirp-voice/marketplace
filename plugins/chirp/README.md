@@ -21,7 +21,7 @@ chirp-plugin/
 ├── .claude-plugin/marketplace.json  serves this dir as a one-plugin marketplace
 ├── .mcp.json                    registers chirp-channel (via ${CLAUDE_PLUGIN_ROOT})
 ├── commands/chirp-auth.md       /chirp:chirp-auth
-├── channel/                     chirp-channel.ts, transcript-mirror.ts, label.ts
+├── channel/                     chirp-channel.ts, turn-line.ts, transcript-scan.ts, label.ts
 ├── auth/                        pkce-login.ts (Clerk OAuth, dev)
 └── hooks/                       hooks.json + auth-check.sh (SessionStart auth nudge)
 ```

@@ -1,4 +1,4 @@
-import type { TaskLine } from './transcript-mirror.js'
+import type { TaskLine } from './transcript-scan.js'
 import type { RunningTask, CompletedTask, TaskStartFrame, TaskDoneFrame } from './frames.js'
 
 export type { RunningTask, CompletedTask }

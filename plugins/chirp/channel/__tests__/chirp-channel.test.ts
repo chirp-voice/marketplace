@@ -1,12 +1,12 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 
-// Importing chirp-channel.ts pulls in its module-level wiring (mirror tailer + relay connect +
+// Importing chirp-channel.ts pulls in its module-level wiring (transcript tailer + relay connect +
 // stdio transport). Those side effects are guarded behind `!process.env.VITEST`, which vitest sets,
 // so importing here is inert and we can drive connectRelay() directly with injected fakes.
 import {
   connectRelay, _reconnectDelayForTests, _resetReconnectForTests, _relayUrlValidForTests,
-  resolveMirrorPath, QUIET_RECHECK_MS,
-  type MirrorTailerState,
+  resolveTranscriptPath, QUIET_RECHECK_MS,
+  type TailerState,
 } from '../chirp-channel'
 
 function fakeWsInstance() {
@@ -54,6 +54,22 @@ describe('connectRelay — JWT on the upgrade header', () => {
     expect(frame).toMatchObject({ v: 1, kind: 'hello', role: 'channel', jwt: 'tok-xyz' })
   })
 
+  test('the hello frame reports controllability', async () => {
+    const ws = fakeWsInstance()
+    const makeWs = makeWsFn(ws)
+    const getToken = vi.fn(async () => 'tok-ctrl')
+
+    await connectRelay({ getToken, makeWs: makeWs as any })
+
+    const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')
+    expect(openCall).toBeDefined()
+    await openCall![1]()
+
+    expect(ws.send).toHaveBeenCalledTimes(1)
+    const frame = JSON.parse(ws.send.mock.calls[0][0] as string)
+    expect(typeof frame.controllable).toBe('boolean')
+  })
+
   test('with a null token, makeWs is NOT called and a reconnect is scheduled', async () => {
     const ws = fakeWsInstance()
     const makeWs = makeWsFn(ws)
@@ -97,8 +113,8 @@ describe('connectRelay — JWT on the upgrade header', () => {
 })
 
 // ── Fix 1: quiet-transcript re-resolution ────────────────────────────────────
-describe('resolveMirrorPath — quiet-transcript re-resolution (fix 1)', () => {
-  const baseState = (): MirrorTailerState => ({ path: '/old/abc.jsonl', offset: 100, lastActivityMs: 0, buffer: '' })
+describe('resolveTranscriptPath — quiet-transcript re-resolution (fix 1)', () => {
+  const baseState = (): TailerState => ({ path: '/old/abc.jsonl', offset: 100, lastActivityMs: 0, buffer: '' })
   const finders = (newId: string | null, newPath: string | null) => ({
     newestId: vi.fn(() => newId),
     findPath: vi.fn(() => newPath),
@@ -106,7 +122,7 @@ describe('resolveMirrorPath — quiet-transcript re-resolution (fix 1)', () => {
 
   test('returns updated path + reset offset when a newer transcript exists', () => {
     const state = baseState()
-    const result = resolveMirrorPath(state, '/proj', '/cwd', 9000, finders('newid', '/new/newid.jsonl'))
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 9000, finders('newid', '/new/newid.jsonl'))
     expect(result.path).toBe('/new/newid.jsonl')
     expect(result.offset).toBe(0)
     expect(result.buffer).toBe('')
@@ -115,7 +131,7 @@ describe('resolveMirrorPath — quiet-transcript re-resolution (fix 1)', () => {
 
   test('does not switch when the newest path is the same file already being tailed', () => {
     const state = baseState()
-    const result = resolveMirrorPath(state, '/proj', '/cwd', 9000, finders('abc', '/old/abc.jsonl'))
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 9000, finders('abc', '/old/abc.jsonl'))
     // Same path: no switch, but lastActivityMs still updated.
     expect(result.path).toBe('/old/abc.jsonl')
     expect(result.offset).toBe(100) // offset preserved
@@ -124,7 +140,7 @@ describe('resolveMirrorPath — quiet-transcript re-resolution (fix 1)', () => {
 
   test('returns unchanged path (plus refreshed lastActivityMs) when no newer transcript is found', () => {
     const state = baseState()
-    const result = resolveMirrorPath(state, '/proj', '/cwd', 5000, finders(null, null))
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 5000, finders(null, null))
     expect(result.path).toBe('/old/abc.jsonl')
     expect(result.lastActivityMs).toBe(5000)
   })
@@ -135,12 +151,12 @@ describe('resolveMirrorPath — quiet-transcript re-resolution (fix 1)', () => {
 })
 
 // ── Fix 2: tailer recovery from truncation ────────────────────────────────────
-describe('resolveMirrorPath — truncation reset (fix 2)', () => {
+describe('resolveTranscriptPath — truncation reset (fix 2)', () => {
   test('when offset > size (truncation detected), re-resolves to newest transcript', () => {
-    // The channel code detects size < offset and calls resolveMirrorPath — the same helper
+    // The channel code detects size < offset and calls resolveTranscriptPath — the same helper
     // used by the quiet-timeout path. This test verifies that reset + path switch works.
-    const state: MirrorTailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: 'partial' }
-    const result = resolveMirrorPath(state, '/proj', '/cwd', 1234, {
+    const state: TailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: 'partial' }
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 1234, {
       newestId: vi.fn(() => 'newid'),
       findPath: vi.fn(() => '/new/newid.jsonl'),
     })
@@ -151,14 +167,98 @@ describe('resolveMirrorPath — truncation reset (fix 2)', () => {
 
   test('when no newer file found after truncation, preserves current path but resets lastActivityMs', () => {
     // If newestId returns the same session, we stay on the same file (offset unchanged by
-    // resolveMirrorPath alone — the caller is responsible for truncation-specific reset).
-    const state: MirrorTailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: '' }
-    const result = resolveMirrorPath(state, '/proj', '/cwd', 7777, {
+    // resolveTranscriptPath alone — the caller is responsible for truncation-specific reset).
+    const state: TailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: '' }
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 7777, {
       newestId: vi.fn(() => null),
       findPath: vi.fn(() => null),
     })
     expect(result.path).toBe('/old/abc.jsonl')
     expect(result.lastActivityMs).toBe(7777)
+  })
+})
+
+// ── history-lines handler ─────────────────────────────────────────────────────
+// Covers the `history-request` branch in handleRelayMessage.
+//
+// The handler is: `const path = findTranscriptPath(…); emit({ kind: 'history-lines', lines: path ? readRecentTurnLines(path) : [] })`
+//
+// `findTranscriptPath` and `readRecentTurnLines` use module-level constants that are
+// fixed at import time (real FS paths, real sessionId), so we test the two concerns
+// separately:
+//   (a) End-to-end: a `history-request` message always produces a `history-lines` frame
+//       with a `lines` array (whatever the current session transcript contains).
+//   (b) `path ? … : []` fallback: readRecentTurnLines returns [] for a non-existent path,
+//       which is exactly what the handler emits when no transcript is found.
+describe('handleRelayMessage — history-request → history-lines', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  /** Build a fake WebSocket, connect it via connectRelay, and return the wired message handler
+   *  plus a list that collects every frame the channel sends back over the relay. */
+  async function buildHarness() {
+    let messageHandler: ((raw: unknown) => Promise<void>) | null = null
+    const sentFrames: unknown[] = []
+    const ws = {
+      on: vi.fn((event: string, cb: (...args: unknown[]) => unknown) => {
+        if (event === 'message') messageHandler = cb as typeof messageHandler
+      }),
+      send: vi.fn((data: unknown) => { sentFrames.push(JSON.parse(data as string)) }),
+      close: vi.fn(),
+      readyState: 1, // OPEN
+    }
+    const makeWs = vi.fn((_url: string, _opts: { headers: Record<string, string> }) => ws)
+    await connectRelay({ getToken: async () => 'tok-hist', makeWs: makeWs as any })
+    return { messageHandler: messageHandler!, sentFrames }
+  }
+
+  test('history-request always emits a history-lines frame with a lines array', async () => {
+    // Fires the handler end-to-end: regardless of whether the session transcript resolves,
+    // the response must be a well-formed `history-lines` frame.
+    const { messageHandler, sentFrames } = await buildHarness()
+
+    await messageHandler(JSON.stringify({ v: 1, kind: 'history-request' }))
+
+    const frame = sentFrames.find((f: any) => f.kind === 'history-lines')
+    expect(frame).toBeDefined()
+    expect(Array.isArray((frame as any).lines)).toBe(true)
+  })
+
+  test('no resolved path → readRecentTurnLines returns [] (the handler`s fallback branch)', async () => {
+    // The handler does: `path ? readRecentTurnLines(path) : []`
+    // When findTranscriptPath returns null the handler emits lines: [].
+    // readRecentTurnLines(nonExistentPath) === [] is the exact same contract,
+    // since a missing file is indistinguishable from "no path resolved" at the frame level.
+    const { readRecentTurnLines } = await import('../turn-line')
+    const lines = readRecentTurnLines('/nonexistent/path/that/does/not/exist.jsonl')
+    expect(lines).toEqual([])
+  })
+
+  test('resolved path → readRecentTurnLines projects text-bearing lines (the handler`s main branch)', async () => {
+    // Verifies the projection contract that the handler delegates to when a path IS found.
+    const { readRecentTurnLines } = await import('../turn-line')
+    const { writeFileSync, mkdirSync, unlinkSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+
+    const dir = join(tmpdir(), 'chirp-test-history')
+    mkdirSync(dir, { recursive: true })
+    const tmpFile = join(dir, 'fake-session.jsonl')
+    // One text-bearing user line + one tool_result line (text:null, filtered by readRecentTurnLines).
+    writeFileSync(tmpFile, [
+      JSON.stringify({ type: 'user', message: { content: 'hello from history test' } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: [] }] } }),
+    ].join('\n') + '\n', 'utf8')
+
+    try {
+      const lines = readRecentTurnLines(tmpFile)
+      // Only the text-bearing line survives the filter; the tool_result row (text:null) is dropped.
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toMatchObject({ role: 'user', text: 'hello from history test' })
+    } finally {
+      try { unlinkSync(tmpFile) } catch { /* best-effort */ }
+    }
   })
 })
 
