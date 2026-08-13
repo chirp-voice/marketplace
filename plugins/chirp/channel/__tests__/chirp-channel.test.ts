@@ -1,4 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { pickLastAssistantText } from '../turn-line'
+import type { TurnLine } from '../turn-line'
 
 // Importing chirp-channel.ts pulls in its module-level wiring (transcript tailer + relay connect +
 // stdio transport). Those side effects are guarded behind `!process.env.VITEST`, which vitest sets,
@@ -42,7 +44,7 @@ describe('connectRelay — JWT on the upgrade header', () => {
     const makeWs = makeWsFn(ws)
     const getToken = vi.fn(async () => 'tok-xyz')
 
-    await connectRelay({ getToken, makeWs: makeWs as any })
+    await connectRelay({ getToken, makeWs: makeWs as any, readPreview: vi.fn(() => null) })
 
     // Find and fire the 'open' handler the way ws would.
     const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')
@@ -59,7 +61,7 @@ describe('connectRelay — JWT on the upgrade header', () => {
     const makeWs = makeWsFn(ws)
     const getToken = vi.fn(async () => 'tok-ctrl')
 
-    await connectRelay({ getToken, makeWs: makeWs as any })
+    await connectRelay({ getToken, makeWs: makeWs as any, readPreview: vi.fn(() => null) })
 
     const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')
     expect(openCall).toBeDefined()
@@ -284,5 +286,109 @@ describe('relay URL validation (fix 3)', () => {
     // Should not throw; the synchronous throw from makeWs must be caught and turned into a reconnect.
     await expect(connectRelay({ getToken, makeWs: throwingMakeWs as any })).resolves.toBeUndefined()
     expect(throwingMakeWs).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── one-shot preview frame ────────────────────────────────────────────────────
+describe('connectRelay — one-shot preview frame after hello', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  test('after hello, a one-shot preview frame carries the last assistant text', async () => {
+    const ws = fakeWsInstance()
+    const getToken = vi.fn(async () => 'tok')
+    const readPreview = vi.fn(() => ({ text: 'Last answer from the JSONL', ts: 42 }))
+    await connectRelay({ getToken, makeWs: makeWsFn(ws) as any, readPreview })
+    const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')!
+    await openCall[1]()
+    const frames = ws.send.mock.calls.map(([raw]) => JSON.parse(raw as string))
+    expect(frames[0].kind).toBe('hello')
+    const preview = frames.find((f) => f.kind === 'preview')
+    expect(preview).toMatchObject({ v: 1, kind: 'preview', text: 'Last answer from the JSONL', ts: 42 })
+  })
+
+  test('no preview frame when the transcript has no assistant text', async () => {
+    const ws = fakeWsInstance()
+    await connectRelay({ getToken: vi.fn(async () => 'tok'), makeWs: makeWsFn(ws) as any, readPreview: vi.fn(() => null) })
+    const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')!
+    await openCall[1]()
+    expect(ws.send.mock.calls.map(([raw]) => JSON.parse(raw as string)).some((f) => f.kind === 'preview')).toBe(false)
+  })
+})
+
+// ── pickLastAssistantText ─────────────────────────────────────────────────────
+const makeLine = (overrides: Partial<TurnLine>): TurnLine => ({
+  role: 'assistant',
+  stopReason: null,
+  isApiError: false,
+  text: null,
+  tools: [],
+  injected: false,
+  taskNotification: false,
+  ...overrides,
+})
+
+describe('pickLastAssistantText', () => {
+  test('returns null for an empty line list', () => {
+    expect(pickLastAssistantText([])).toBeNull()
+  })
+
+  test('skips user lines and returns the last assistant text', () => {
+    const lines: TurnLine[] = [
+      makeLine({ role: 'user', text: 'user question' }),
+      makeLine({ role: 'assistant', text: 'assistant reply' }),
+      makeLine({ role: 'user', text: 'follow-up' }),
+    ]
+    expect(pickLastAssistantText(lines)).toBe('assistant reply')
+  })
+
+  test('skips assistant lines with text: null', () => {
+    const lines: TurnLine[] = [
+      makeLine({ role: 'assistant', text: 'earlier reply' }),
+      makeLine({ role: 'assistant', text: null }),
+    ]
+    expect(pickLastAssistantText(lines)).toBe('earlier reply')
+  })
+
+  test('skips assistant lines with taskNotification: true', () => {
+    const lines: TurnLine[] = [
+      makeLine({ role: 'assistant', text: 'real reply' }),
+      makeLine({ role: 'assistant', text: 'task done!', taskNotification: true }),
+    ]
+    expect(pickLastAssistantText(lines)).toBe('real reply')
+  })
+
+  test('returns null when all assistant lines are task notifications', () => {
+    const lines: TurnLine[] = [
+      makeLine({ role: 'assistant', text: 'task done!', taskNotification: true }),
+    ]
+    expect(pickLastAssistantText(lines)).toBeNull()
+  })
+
+  test('clips text to 200 codepoints', () => {
+    const long = 'a'.repeat(300)
+    const lines: TurnLine[] = [makeLine({ text: long })]
+    const result = pickLastAssistantText(lines)
+    expect(result).toHaveLength(200)
+    expect(result).toBe('a'.repeat(200))
+  })
+
+  test('clips correctly for multibyte codepoints', () => {
+    // Each emoji is 2 UTF-16 code units but ONE codepoint — spread must count codepoints.
+    const emoji = '😀'.repeat(250)
+    const lines: TurnLine[] = [makeLine({ text: emoji })]
+    const result = pickLastAssistantText(lines)
+    // Should be 200 emojis (200 codepoints), not 200 UTF-16 code units (100 emojis).
+    expect([...result!].length).toBe(200)
+  })
+
+  test('picks the LAST qualifying assistant line in the list', () => {
+    const lines: TurnLine[] = [
+      makeLine({ text: 'first' }),
+      makeLine({ text: 'second' }),
+      makeLine({ text: 'third' }),
+    ]
+    expect(pickLastAssistantText(lines)).toBe('third')
   })
 })

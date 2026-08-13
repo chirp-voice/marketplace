@@ -7,7 +7,7 @@ import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { statSync, openSync, readSync, closeSync, readFileSync } from 'node:fs'
 import { findTranscriptPath, newestSessionId, parseTaskLine, extractModel, latestModelIn } from './transcript-scan.js'
-import { projectTurnLine, readRecentTurnLines } from './turn-line.js'
+import { projectTurnLine, readRecentTurnLines, pickLastAssistantText } from './turn-line.js'
 import { readEffortLevel } from './effort.js'
 import { TaskTracker, type TaskFrame } from './task-tracker.js'
 import type { TaskSnapshotFrame } from './frames.js'
@@ -77,6 +77,20 @@ const emit = (obj: Record<string, unknown>) => {
 // localize the cast here rather than scattering it at each call site.
 const emitFrame = (f: TaskFrame | TaskSnapshotFrame) => emit(f as unknown as Record<string, unknown>)
 
+/** Read the last assistant response from the session transcript, capped at 200 codepoints.
+ *  Used as the default `readPreview` dep in connectRelay to seed the home-row preview for
+ *  sessions whose activity predates the relay's in-memory state. Returns null on any failure. */
+function readLastAssistantPreview(): { text: string; ts: number } | null {
+  try {
+    const path = findTranscriptPath(PROJECTS, sessionId)
+    if (!path) return null
+    const lines = readRecentTurnLines(path, 50)
+    const text = pickLastAssistantText(lines)
+    if (!text) return null
+    return { text, ts: Date.now() }
+  } catch { return null }
+}
+
 function currentModel(): string | null {
   const path = findTranscriptPath(PROJECTS, sessionId)
   if (!path) return null
@@ -116,6 +130,7 @@ export async function connectRelay(
   deps: {
     getToken?: () => Promise<string | null>
     makeWs?: (url: string, opts: { headers: Record<string, string> }) => WebSocket
+    readPreview?: () => { text: string; ts: number } | null
   } = {},
 ) {
   // Skip relay entirely if the URL was invalid at startup (already logged once).
@@ -153,6 +168,11 @@ export async function connectRelay(
     // `controllable` is best-effort: true whenever we cannot prove the channel is inactive
     // (see activation.ts). Resolved once at module load.
     ws.send(JSON.stringify({ v: 1, kind: 'hello', role: 'channel', jwt, sessionId, label, model: reportedModel ?? undefined, effort, controllable }))
+    // One-shot preview: seed the home-row last-response for sessions whose activity predates
+    // the relay's in-memory state. Sent directly via ws.send (not emit) to match the hello
+    // pattern and avoid any module-level `relay` state race in tests.
+    const p = (deps.readPreview ?? readLastAssistantPreview)()
+    if (p) ws.send(JSON.stringify({ v: 1, sessionId, kind: 'preview', text: p.text, ts: p.ts }))
   })
   ws.on('message', handleRelayMessage)
   ws.on('error', (e) => console.error('[chirp-channel] relay error', String(e)))

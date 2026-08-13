@@ -117,6 +117,16 @@ export function projectTurnLine(jsonl: string): TurnLine | null {
   return { ...base, role: 'other' }
 }
 
+/** Return the last assistant text that is not a task-notification, clipped to 200 codepoints.
+ *  Scans in reverse so the newest turn wins. Returns null when no qualifying line is found. */
+export function pickLastAssistantText(lines: TurnLine[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]
+    if (l.role === 'assistant' && l.text && !l.taskNotification) return [...l.text].slice(0, 200).join('')
+  }
+  return null
+}
+
 /** Project the last `n` text-bearing lines of a transcript, for history backfill when the app
  *  opens a session. Text-bearing is a mechanical filter (drop tool_result / thinking-only lines),
  *  not a policy one — the concierge decides which of these become conversation turns. */
