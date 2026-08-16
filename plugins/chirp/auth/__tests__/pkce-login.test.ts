@@ -111,8 +111,10 @@ describe('oauthConfig', () => {
 describe('loginInteractive', () => {
   test('rejects with a timeout instead of hanging when the callback never arrives', async () => {
     // port 0 = ephemeral (no clash with a real 53682 flow); no-op open = no browser.
+    // The guidance must stay surface-neutral: this file is shared byte-identical by the
+    // Claude Code plugin, the OpenClaw plugin, and the host CLI.
     await expect(
       loginInteractive({ port: 0, timeoutMs: 20, open: () => {} }),
-    ).rejects.toThrow(/timed out/)
+    ).rejects.toThrow(/timed out.*in Claude Code: \/chirp-auth/)
   })
 })

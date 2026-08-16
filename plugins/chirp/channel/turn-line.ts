@@ -3,12 +3,17 @@ import { basename } from 'node:path'
 
 // How many text-bearing projected lines the history backfill keeps. A mechanical bound on the
 // payload, not a policy: the concierge reduces these to conversation turns (see relay/transcript.ts).
-export const HISTORY_LINE_CAP = 120
+const HISTORY_LINE_CAP = 120
 
 const BASH_CAP = 40
 
 /**
  * One transcript JSONL line, projected to the fields the concierge needs to interpret it.
+ *
+ * `TurnLine` is PROVIDER-NEUTRAL: it describes a conversational turn, not a Claude Code
+ * artifact. `openclaw-plugin/channel/turn-line.ts` emits the same shape from OpenClaw
+ * replies and it flows through the same concierge interpreter unchanged. Keep it that way —
+ * a Claude-Code-specific field here forks the wire.
  *
  * PRIVACY BOUNDARY — this is the ONLY shape that leaves the Mac. `tool_result` payloads,
  * thinking blocks, tool *inputs*, and raw line JSON stay here. `tools[].preview` is a

@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { loginInteractive, loadCreds, clearCreds, save, identityFromToken } from "./pkce-login.js";
 
 export type AuthCommand = "login" | "status" | "logout";
@@ -45,5 +46,6 @@ async function main(): Promise<void> {
   console.log(`\n${CHANNEL_LAUNCH_HINT}`);
 }
 
-// Run only when invoked directly (not when imported by the test).
-if (import.meta.url === `file://${process.argv[1]}`) void main();
+// Run only when invoked directly (not when imported by the test). pathToFileURL percent-encodes
+// spaces etc. the way import.meta.url does — a hand-built `file://${argv[1]}` string does not.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();

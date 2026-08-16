@@ -6,8 +6,10 @@ import { readdirSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 // Resolve the active session's id from its transcript when no id is supplied in the environment.
-// Newer Claude Code builds (≥2.1.x) inject CLAUDE_PROJECT_DIR but NOT CLAUDE_CODE_SESSION_ID into a
-// channel MCP server's env, so we recover the id from the project's transcript folder:
+// Current Claude Code builds (2.1.170+) inject CLAUDE_CODE_SESSION_ID alongside CLAUDE_PROJECT_DIR
+// into a channel MCP server's env (see the identity notes in chirp-channel.ts), so this is a
+// fallback for older builds that inject only CLAUDE_PROJECT_DIR. For them we recover the id from
+// the project's transcript folder:
 // ~/.claude/projects/<encoded-project-dir>/<sessionId>.jsonl, where the encoding replaces every
 // non-alphanumeric run with `-` (e.g. /Users/jon/foo → -Users-jon-foo). The session that owns this
 // channel is the one whose transcript is being written, i.e. the most-recently-modified `.jsonl`.

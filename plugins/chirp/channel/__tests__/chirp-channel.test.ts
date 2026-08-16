@@ -6,13 +6,41 @@ import type { TurnLine } from '../turn-line'
 // stdio transport). Those side effects are guarded behind `!process.env.VITEST`, which vitest sets,
 // so importing here is inert and we can drive connectRelay() directly with injected fakes.
 import {
-  connectRelay, _reconnectDelayForTests, _resetReconnectForTests, _relayUrlValidForTests,
-  resolveTranscriptPath, QUIET_RECHECK_MS,
+  connectRelay, _relayUrlValidForTests,
+  _mcpForTests, _setTailedPathForTests, _pendingPermsForTests, _pluginVersionForTests,
+  resolveTranscriptPath, QUIET_RECHECK_MS, PROVIDER,
   type TailerState,
 } from '../chirp-channel'
 
+/** Drain the microtask queue: the shared relay reads the preview through an async dep, so its
+ *  frame lands a few ticks after the open handler returns. Safe under fake timers (which stub
+ *  the macrotask clock, not microtasks). */
+const flushMicrotasks = async () => {
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+}
+
+/** Build a fake WebSocket, connect it via connectRelay, and return the wired message handler
+ *  plus a list that collects every frame the channel sends back over the relay. */
+async function buildHarness() {
+  let messageHandler: ((raw: unknown) => Promise<void>) | null = null
+  const sentFrames: unknown[] = []
+  const ws = {
+    on: vi.fn((event: string, cb: (...args: unknown[]) => unknown) => {
+      if (event === 'message') messageHandler = cb as typeof messageHandler
+    }),
+    send: vi.fn((data: unknown) => { sentFrames.push(JSON.parse(data as string)) }),
+    close: vi.fn(),
+    readyState: 1, // OPEN
+  }
+  const makeWs = vi.fn((_url: string, _opts: { headers: Record<string, string> }) => ws)
+  await connectRelay({ getToken: async () => 'tok-hist', makeWs: makeWs as any })
+  return { messageHandler: messageHandler!, sentFrames }
+}
+
 function fakeWsInstance() {
-  return { on: vi.fn(), send: vi.fn(), close: vi.fn() }
+  // readyState OPEN so the shared relay's preview liveness guard (`sock.readyState === 1`)
+  // treats a manually-fired 'open' the way a real ws would.
+  return { on: vi.fn(), send: vi.fn(), close: vi.fn(), readyState: 1 }
 }
 
 type FakeWs = ReturnType<typeof fakeWsInstance>
@@ -72,6 +100,27 @@ describe('connectRelay — JWT on the upgrade header', () => {
     expect(typeof frame.controllable).toBe('boolean')
   })
 
+  test('the hello frame declares the claude-code provider', async () => {
+    const ws = fakeWsInstance()
+    const makeWs = makeWsFn(ws)
+    const getToken = vi.fn(async () => 'tok-prov')
+
+    await connectRelay({ getToken, makeWs: makeWs as any, readPreview: vi.fn(() => null) })
+
+    const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')
+    expect(openCall).toBeDefined()
+    await openCall![1]()
+
+    const frame = JSON.parse(ws.send.mock.calls[0][0] as string)
+    // Sent explicitly rather than leaning on the relay's absent-means-claude-code default: that
+    // default is backward compatibility for plugins already installed on user Macs, not the
+    // shape a current plugin should emit.
+    expect(frame.provider).toBe(PROVIDER)
+    // Pin the literal separately — the line above only proves the frame carries whatever the
+    // module exports, not that the wire value is the one the app and worker key off.
+    expect(PROVIDER).toBe('claude-code')
+  })
+
   test('with a null token, makeWs is NOT called and a reconnect is scheduled', async () => {
     const ws = fakeWsInstance()
     const makeWs = makeWsFn(ws)
@@ -93,42 +142,82 @@ describe('connectRelay — JWT on the upgrade header', () => {
     // regression was resetting it after the token fetch (pre-open), which pinned
     // retries at the 1s floor forever.
     const getToken = vi.fn(async () => 'tok-123')
-    _resetReconnectForTests()
+    // A fake clock (the shared relay's schedule/cancel deps) collects reconnects so each
+    // attempt can be fired by hand and the armed delay stays observable via the handle.
+    const pending: Array<() => void> = []
+    const handlers: Array<Record<string, (...args: unknown[]) => unknown>> = []
+    const makeWs = vi.fn((_url: string, _opts: { headers: Record<string, string> }) => {
+      const h: Record<string, (...args: unknown[]) => unknown> = {}
+      handlers.push(h)
+      return { on: (ev: string, cb: (...args: unknown[]) => unknown) => { h[ev] = cb }, send: vi.fn(), close: vi.fn(), readyState: 0 }
+    })
 
-    const failedAttempt = async () => {
-      const ws = fakeWsInstance()
-      await connectRelay({ getToken, makeWs: makeWsFn(ws) as any })
-      const closeCall = ws.on.mock.calls.find(([ev]) => ev === 'close')
-      expect(closeCall).toBeDefined()
-      closeCall![1]() // relay refused / dropped the socket pre-open
-      const next = _reconnectDelayForTests()
-      _resetReconnectForTests(next) // clear the single-flight timer, keep the backoff
-      return next
-    }
+    const handle = (await connectRelay({
+      getToken,
+      makeWs: makeWs as any,
+      schedule: (fn) => { pending.push(fn); return pending.length - 1 },
+      cancel: () => {},
+    }))!
+    expect(handle.reconnectDelayMs()).toBe(1000)
 
-    const first = await failedAttempt()
-    const second = await failedAttempt()
+    handlers[0].close() // relay refused / dropped the socket pre-open
+    expect(handle.reconnectDelayMs()).toBe(2000) // 1000 armed, doubled for the next attempt
 
-    expect(first).toBe(2000) // 1000 armed, doubled for the next attempt
-    expect(second).toBeGreaterThan(first) // buggy code re-pinned this to 2000
+    pending.shift()!() // fire the queued reconnect
+    await flushMicrotasks() // let its token fetch resolve and the next socket wire up
+    expect(handlers).toHaveLength(2)
+    handlers[1].close()
+    expect(handle.reconnectDelayMs()).toBe(4000) // buggy code re-pinned this to 2000
   })
 })
 
 // ── Fix 1: quiet-transcript re-resolution ────────────────────────────────────
 describe('resolveTranscriptPath — quiet-transcript re-resolution (fix 1)', () => {
   const baseState = (): TailerState => ({ path: '/old/abc.jsonl', offset: 100, lastActivityMs: 0, buffer: '' })
-  const finders = (newId: string | null, newPath: string | null) => ({
+  const finders = (newId: string | null, newPath: string | null, size: number | null = 0) => ({
     newestId: vi.fn(() => newId),
     findPath: vi.fn(() => newPath),
+    sizeOf: vi.fn(() => size),
   })
 
-  test('returns updated path + reset offset when a newer transcript exists', () => {
+  test('returns updated path + reset offset when a newer, fresh transcript exists', () => {
     const state = baseState()
     const result = resolveTranscriptPath(state, '/proj', '/cwd', 9000, finders('newid', '/new/newid.jsonl'))
     expect(result.path).toBe('/new/newid.jsonl')
     expect(result.offset).toBe(0)
     expect(result.buffer).toBe('')
     expect(result.lastActivityMs).toBe(9000)
+  })
+
+  test('quiet switch to a small fresh file (post-/clear) replays it from 0', () => {
+    const state = baseState()
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 9000, finders('fresh', '/new/fresh.jsonl', 4_096))
+    expect(result.path).toBe('/new/fresh.jsonl')
+    expect(result.offset).toBe(0)
+  })
+
+  test('quiet switch to an already-large file starts at EOF, never replaying it from 0', () => {
+    // Two concurrent sessions in one project dir: the idle session's quiet probe finds the
+    // active session's transcript. Starting anywhere but EOF replays that session's entire
+    // history as this row's turn-lines (wrong-row duplication, re-emitted task frames).
+    const state = baseState()
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 9000, finders('busy', '/other/busy.jsonl', 5_000_000))
+    expect(result.path).toBe('/other/busy.jsonl')
+    expect(result.offset).toBe(5_000_000)
+    expect(result.buffer).toBe('')
+  })
+
+  test('quiet switch with an unreadable size falls back to 0 (the next stat failure re-resolves anyway)', () => {
+    const result = resolveTranscriptPath(baseState(), '/proj', '/cwd', 9000, finders('x', '/new/x.jsonl', null))
+    expect(result.offset).toBe(0)
+  })
+
+  test('missing/truncated switches replay from 0 even when the file is large', () => {
+    // Our own file vanished or shrank — the newest file is this session's continuation.
+    for (const reason of ['missing', 'truncated'] as const) {
+      const result = resolveTranscriptPath(baseState(), '/proj', '/cwd', 9000, finders('big', '/new/big.jsonl', 5_000_000), reason)
+      expect(result.offset).toBe(0)
+    }
   })
 
   test('does not switch when the newest path is the same file already being tailed', () => {
@@ -154,38 +243,49 @@ describe('resolveTranscriptPath — quiet-transcript re-resolution (fix 1)', () 
 
 // ── Fix 2: tailer recovery from truncation ────────────────────────────────────
 describe('resolveTranscriptPath — truncation reset (fix 2)', () => {
-  test('when offset > size (truncation detected), re-resolves to newest transcript', () => {
-    // The channel code detects size < offset and calls resolveTranscriptPath — the same helper
-    // used by the quiet-timeout path. This test verifies that reset + path switch works.
+  test('truncation with a path switch replays the new file from 0', () => {
     const state: TailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: 'partial' }
     const result = resolveTranscriptPath(state, '/proj', '/cwd', 1234, {
       newestId: vi.fn(() => 'newid'),
       findPath: vi.fn(() => '/new/newid.jsonl'),
-    })
+    }, 'truncated')
     expect(result.path).toBe('/new/newid.jsonl')
     expect(result.offset).toBe(0)
     expect(result.buffer).toBe('')
   })
 
-  test('when no newer file found after truncation, preserves current path but resets lastActivityMs', () => {
-    // If newestId returns the same session, we stay on the same file (offset unchanged by
-    // resolveTranscriptPath alone — the caller is responsible for truncation-specific reset).
-    const state: TailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: '' }
+  test('truncation with the same path resets the offset — the tailer must not wedge on size < offset', () => {
+    // Regression: when the truncated file was still the newest transcript, the offset was
+    // preserved, so `size < offset` held forever and the tailer never read another byte.
+    const state: TailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: 'partial' }
     const result = resolveTranscriptPath(state, '/proj', '/cwd', 7777, {
+      newestId: vi.fn(() => 'abc'),
+      findPath: vi.fn(() => '/old/abc.jsonl'),
+    }, 'truncated')
+    expect(result.path).toBe('/old/abc.jsonl')
+    expect(result.offset).toBe(0)
+    expect(result.buffer).toBe('')
+    expect(result.lastActivityMs).toBe(7777)
+  })
+
+  test('truncation with no transcript found still resets the offset', () => {
+    const state: TailerState = { path: '/old/abc.jsonl', offset: 500, lastActivityMs: 0, buffer: '' }
+    const result = resolveTranscriptPath(state, '/proj', '/cwd', 8888, {
       newestId: vi.fn(() => null),
       findPath: vi.fn(() => null),
-    })
+    }, 'truncated')
     expect(result.path).toBe('/old/abc.jsonl')
-    expect(result.lastActivityMs).toBe(7777)
+    expect(result.offset).toBe(0)
+    expect(result.lastActivityMs).toBe(8888)
   })
 })
 
 // ── history-lines handler ─────────────────────────────────────────────────────
 // Covers the `history-request` branch in handleRelayMessage.
 //
-// The handler is: `const path = findTranscriptPath(…); emit({ kind: 'history-lines', lines: path ? readRecentTurnLines(path) : [] })`
+// The handler is: `const path = currentTranscriptPath(); emit({ kind: 'history-lines', lines: path ? readRecentTurnLines(path) : [] })`
 //
-// `findTranscriptPath` and `readRecentTurnLines` use module-level constants that are
+// `currentTranscriptPath` and `readRecentTurnLines` use module-level constants that are
 // fixed at import time (real FS paths, real sessionId), so we test the two concerns
 // separately:
 //   (a) End-to-end: a `history-request` message always produces a `history-lines` frame
@@ -196,24 +296,6 @@ describe('handleRelayMessage — history-request → history-lines', () => {
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
-
-  /** Build a fake WebSocket, connect it via connectRelay, and return the wired message handler
-   *  plus a list that collects every frame the channel sends back over the relay. */
-  async function buildHarness() {
-    let messageHandler: ((raw: unknown) => Promise<void>) | null = null
-    const sentFrames: unknown[] = []
-    const ws = {
-      on: vi.fn((event: string, cb: (...args: unknown[]) => unknown) => {
-        if (event === 'message') messageHandler = cb as typeof messageHandler
-      }),
-      send: vi.fn((data: unknown) => { sentFrames.push(JSON.parse(data as string)) }),
-      close: vi.fn(),
-      readyState: 1, // OPEN
-    }
-    const makeWs = vi.fn((_url: string, _opts: { headers: Record<string, string> }) => ws)
-    await connectRelay({ getToken: async () => 'tok-hist', makeWs: makeWs as any })
-    return { messageHandler: messageHandler!, sentFrames }
-  }
 
   test('history-request always emits a history-lines frame with a lines array', async () => {
     // Fires the handler end-to-end: regardless of whether the session transcript resolves,
@@ -264,6 +346,92 @@ describe('handleRelayMessage — history-request → history-lines', () => {
   })
 })
 
+// ── Fix 4: readers follow the tailer's current transcript ─────────────────────
+describe('handleRelayMessage — history follows the tailer`s current path', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  test('after the tailer switches files (e.g. post-/clear), history reads the switched-to file', async () => {
+    const { writeFileSync, mkdirSync, unlinkSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+
+    const dir = join(tmpdir(), 'chirp-test-current-path')
+    mkdirSync(dir, { recursive: true })
+    const tmpFile = join(dir, 'post-clear-session.jsonl')
+    writeFileSync(tmpFile, JSON.stringify({ type: 'user', message: { content: 'first post-clear prompt' } }) + '\n', 'utf8')
+
+    try {
+      // Simulate the tailer having re-resolved onto a new transcript: the boot-time
+      // sessionId's file is now stale, and history must come from the tailed file.
+      _setTailedPathForTests(tmpFile)
+      const { messageHandler, sentFrames } = await buildHarness()
+      await messageHandler(JSON.stringify({ v: 1, kind: 'history-request' }))
+      const frame = sentFrames.find((f: any) => f.kind === 'history-lines') as any
+      expect(frame).toBeDefined()
+      expect(frame.lines).toHaveLength(1)
+      expect(frame.lines[0]).toMatchObject({ role: 'user', text: 'first post-clear prompt' })
+    } finally {
+      _setTailedPathForTests(null)
+      try { unlinkSync(tmpFile) } catch { /* best-effort */ }
+    }
+  })
+})
+
+// ── malformed / early relay frames must never throw ───────────────────────────
+// ws.on('message', handleRelayMessage) does not await the handler, so anything that
+// escapes it is an unhandledRejection that kills the whole channel process.
+describe('handleRelayMessage — malformed and early frames', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  test('a well-formed prompt is injected via mcp.notification', async () => {
+    const notify = vi.spyOn(_mcpForTests(), 'notification').mockResolvedValue(undefined)
+    try {
+      const { messageHandler } = await buildHarness()
+      await messageHandler(JSON.stringify({ v: 1, kind: 'prompt', text: 'run the tests' }))
+      expect(notify).toHaveBeenCalledTimes(1)
+      expect(notify.mock.calls[0][0]).toMatchObject({
+        method: 'notifications/claude/channel',
+        params: { content: 'run the tests' },
+      })
+    } finally { notify.mockRestore() }
+  })
+
+  test('a prompt frame with no text resolves without throwing and injects nothing', async () => {
+    const notify = vi.spyOn(_mcpForTests(), 'notification').mockResolvedValue(undefined)
+    try {
+      const { messageHandler } = await buildHarness()
+      await expect(messageHandler(JSON.stringify({ v: 1, kind: 'prompt' }))).resolves.toBeUndefined()
+      await expect(messageHandler(JSON.stringify({ v: 1, kind: 'prompt', text: 42 }))).resolves.toBeUndefined()
+      expect(notify).not.toHaveBeenCalled()
+    } finally { notify.mockRestore() }
+  })
+
+  test('a perm-verdict whose mcp.notification rejects resolves and logs the failure', async () => {
+    // The stdio transport can be down when a verdict arrives (startup, transport drop) —
+    // mcp.notification then throws "Not connected". The verdict is droppable (the terminal
+    // can still answer the permission prompt); killing the process is not.
+    const notify = vi.spyOn(_mcpForTests(), 'notification').mockRejectedValue(new Error('Not connected'))
+    try {
+      const { messageHandler } = await buildHarness()
+      await expect(
+        messageHandler(JSON.stringify({ v: 1, kind: 'perm-verdict', requestId: 'req-1', behavior: 'allow' })),
+      ).resolves.toBeUndefined()
+      expect(notify).toHaveBeenCalledTimes(1)
+      const logged = vi.mocked(console.error).mock.calls.map((c) => c.join(' ')).join('\n')
+      expect(logged).toMatch(/perm-verdict notification FAILED/)
+    } finally { notify.mockRestore() }
+  })
+
+  test('a null frame resolves without throwing', async () => {
+    const { messageHandler } = await buildHarness()
+    await expect(messageHandler('null')).resolves.toBeUndefined()
+  })
+})
+
 // ── Fix 3: malformed relay_url does not kill the server ───────────────────────
 describe('relay URL validation (fix 3)', () => {
   test('_relayUrlValidForTests reflects the baked default URL being valid', () => {
@@ -273,18 +441,20 @@ describe('relay URL validation (fix 3)', () => {
   })
 
   test('connectRelay returns without calling makeWs when relay URL is invalid', async () => {
-    // Simulate invalid relay by forcing _relayUrlValid to false via the injected-deps path.
-    // We achieve this by directly verifying that connectRelay skips makeWs when _relayUrlValid=false.
-    // Since the module-level flag is set at load time (based on CHIRP_RELAY_URL at import), we
+    // Simulate invalid relay by forcing the invalid-URL guard via the injected-deps path.
+    // We achieve this by directly verifying that connectRelay skips makeWs when RELAY is null.
+    // Since the module-level URL is resolved at load time (from CHIRP_RELAY_URL at import), we
     // can't mutate it per-test — but we CAN verify the guard indirectly: when the URL is valid,
     // makeWs IS called; a mock makeWs that throws synchronously must NOT escape connectRelay.
-    _resetReconnectForTests()
     const getToken = vi.fn(async () => 'tok-abc')
     const throwingMakeWs = vi.fn((_url: string, _opts: { headers: Record<string, string> }) => {
       throw new Error('ECONNREFUSED bad URL')
     })
-    // Should not throw; the synchronous throw from makeWs must be caught and turned into a reconnect.
-    await expect(connectRelay({ getToken, makeWs: throwingMakeWs as any })).resolves.toBeUndefined()
+    // Should not throw; the synchronous throw from makeWs must be caught and turned into a
+    // reconnect (parked on the injected schedule so no real timer outlives the test).
+    await expect(
+      connectRelay({ getToken, makeWs: throwingMakeWs as any, schedule: () => 0, cancel: () => {} }),
+    ).resolves.toBeTruthy()
     expect(throwingMakeWs).toHaveBeenCalledTimes(1)
   })
 })
@@ -302,6 +472,7 @@ describe('connectRelay — one-shot preview frame after hello', () => {
     await connectRelay({ getToken, makeWs: makeWsFn(ws) as any, readPreview })
     const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')!
     await openCall[1]()
+    await flushMicrotasks() // the shared relay reads the preview through an async dep
     const frames = ws.send.mock.calls.map(([raw]) => JSON.parse(raw as string))
     expect(frames[0].kind).toBe('hello')
     const preview = frames.find((f) => f.kind === 'preview')
@@ -313,7 +484,104 @@ describe('connectRelay — one-shot preview frame after hello', () => {
     await connectRelay({ getToken: vi.fn(async () => 'tok'), makeWs: makeWsFn(ws) as any, readPreview: vi.fn(() => null) })
     const openCall = ws.on.mock.calls.find(([ev]) => ev === 'open')!
     await openCall[1]()
+    await flushMicrotasks()
     expect(ws.send.mock.calls.map(([raw]) => JSON.parse(raw as string)).some((f) => f.kind === 'preview')).toBe(false)
+  })
+})
+
+// ── perm-request redelivery after a relay outage ──────────────────────────────
+// Unlike turn-lines, perm-requests are NOT recoverable via history-request: a frame
+// dropped while the socket is down leaves the session blocked with the phone never
+// seeing the card. Unresolved requests must be re-sent on reconnect.
+describe('perm-request redelivery after a relay outage', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    _pendingPermsForTests().clear()
+  })
+
+  const permNotification = (requestId = 'req-1') => ({
+    method: 'notifications/claude/channel/permission_request',
+    params: { request_id: requestId, tool_name: 'Bash', description: 'Run a command', input_preview: 'fly deploy' },
+  })
+
+  /** connectRelay against a fake ws in the given readyState (1=OPEN, 3=CLOSED);
+   *  returns the wired handlers plus every frame sent over the socket. */
+  async function connect(readyState: number) {
+    const sentFrames: any[] = []
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+    const ws = {
+      on: vi.fn((event: string, cb: (...args: unknown[]) => unknown) => { handlers[event] = cb }),
+      send: vi.fn((data: unknown) => { sentFrames.push(JSON.parse(data as string)) }),
+      close: vi.fn(),
+      readyState,
+    }
+    await connectRelay({ getToken: async () => 'tok', makeWs: vi.fn(() => ws) as any, readPreview: () => null })
+    return { handlers, sentFrames }
+  }
+  const permFrames = (frames: any[]) => frames.filter((f) => f.kind === 'perm-request')
+
+  test('a perm-request emitted while the socket is down is re-emitted on reconnect', async () => {
+    const down = await connect(3) // CLOSED: emit drops the frame
+    await _mcpForTests().fallbackNotificationHandler!(permNotification() as any)
+    expect(permFrames(down.sentFrames)).toHaveLength(0)
+
+    const up = await connect(1)
+    await up.handlers.open()
+    const perms = permFrames(up.sentFrames)
+    expect(perms).toHaveLength(1)
+    expect(perms[0]).toMatchObject({ requestId: 'req-1', toolName: 'Bash', inputPreview: 'fly deploy' })
+  })
+
+  test('a verdict clears the pending request — the next reconnect re-sends nothing', async () => {
+    const notify = vi.spyOn(_mcpForTests(), 'notification').mockResolvedValue(undefined)
+    try {
+      const first = await connect(1)
+      await _mcpForTests().fallbackNotificationHandler!(permNotification() as any)
+      expect(permFrames(first.sentFrames)).toHaveLength(1)
+      await first.handlers.message(JSON.stringify({ v: 1, kind: 'perm-verdict', requestId: 'req-1', behavior: 'allow' }))
+
+      const second = await connect(1)
+      await second.handlers.open()
+      expect(permFrames(second.sentFrames)).toHaveLength(0)
+    } finally { notify.mockRestore() }
+  })
+
+  test('a delivered-but-unanswered perm-request is re-sent on every reconnect until its verdict', async () => {
+    // Re-sending an already-delivered card is safe: the relay contract is idempotent on requestId.
+    const first = await connect(1)
+    await _mcpForTests().fallbackNotificationHandler!(permNotification() as any)
+    expect(permFrames(first.sentFrames)).toHaveLength(1)
+
+    const second = await connect(1)
+    await second.handlers.open()
+    expect(permFrames(second.sentFrames)).toHaveLength(1)
+    expect(permFrames(second.sentFrames)[0].requestId).toBe('req-1')
+  })
+
+  test('a fresh perm-request supersedes an older undelivered one (one blocking prompt at a time)', async () => {
+    const down = await connect(3)
+    await _mcpForTests().fallbackNotificationHandler!(permNotification('req-old') as any)
+    await _mcpForTests().fallbackNotificationHandler!(permNotification('req-new') as any)
+    expect(permFrames(down.sentFrames)).toHaveLength(0)
+
+    const up = await connect(1)
+    await up.handlers.open()
+    const perms = permFrames(up.sentFrames)
+    expect(perms).toHaveLength(1)
+    expect(perms[0].requestId).toBe('req-new')
+  })
+})
+
+// ── MCP server version tracks the plugin manifest ─────────────────────────────
+describe('plugin version', () => {
+  test('the MCP server version is read from .claude-plugin/plugin.json (no drifting literal)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const manifest = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../../.claude-plugin/plugin.json', import.meta.url)), 'utf8'),
+    ) as { version: string }
+    expect(_pluginVersionForTests()).toBe(manifest.version)
+    expect(_pluginVersionForTests()).toMatch(/^\d+\.\d+\.\d+$/)
   })
 })
 

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { TaskTracker } from '../task-tracker'
+import { TaskTracker, RECENT_CAP } from '../task-tracker'
 
 const launch = { kind: 'bg-launch', toolUseId: 't1', command: 'npm test', label: 'Run tests' } as const
 const result = { kind: 'bg-result', toolUseId: 't1', taskId: 'bg1' } as const
@@ -27,8 +27,9 @@ describe('TaskTracker', () => {
   })
   test('recentlyCompleted is bounded to RECENT_CAP', () => {
     const t = new TaskTracker()
-    for (let i = 0; i < 30; i++) t.apply({ kind: 'bg-done', taskId: `b${i}`, toolUseId: null, status: 'completed', exitCode: 0, summary: `task ${i} (exit code 0)` })
-    expect(t.snapshot().recentlyCompleted.length).toBe(20)
-    expect(t.snapshot().recentlyCompleted[19].taskId).toBe('b29') // newest kept
+    const total = RECENT_CAP + 10
+    for (let i = 0; i < total; i++) t.apply({ kind: 'bg-done', taskId: `b${i}`, toolUseId: null, status: 'completed', exitCode: 0, summary: `task ${i} (exit code 0)` })
+    expect(t.snapshot().recentlyCompleted.length).toBe(RECENT_CAP)
+    expect(t.snapshot().recentlyCompleted[RECENT_CAP - 1].taskId).toBe(`b${total - 1}`) // newest kept
   })
 })

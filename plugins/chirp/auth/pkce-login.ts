@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { randomBytes, createHash } from 'node:crypto'
 import { exec } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -63,18 +63,26 @@ export function loadCreds(): Creds | null {
 }
 export function save(c: Creds) {
   mkdirSync(CRED_DIR, { recursive: true })
-  writeFileSync(CRED_FILE, JSON.stringify(c), { mode: 0o600 })
+  // Write-then-rename: several processes (channel servers, the host daemon) share this file,
+  // and a plain truncate-then-write lets a concurrent reader observe empty/partial JSON.
+  const tmp = join(CRED_DIR, `.credentials.${process.pid}.${randomBytes(4).toString('hex')}.tmp`)
+  writeFileSync(tmp, JSON.stringify(c), { mode: 0o600 })
+  renameSync(tmp, CRED_FILE)
   chmodSync(CRED_FILE, 0o600)
 }
 export function clearCreds(): void {
   rmSync(CRED_FILE, { force: true }) // force: no throw if missing
 }
 
+const EXCHANGE_TIMEOUT_MS = 15_000
+
 async function exchange(body: URLSearchParams): Promise<any> {
   const { base, clientSecret } = oauthConfig()
   if (clientSecret) body.set('client_secret', clientSecret)
   const r = await fetch(`${base}/oauth/token`, {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body,
+    // A hung token endpoint must not wedge startup — getAccessToken is awaited on boot paths.
+    signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
   })
   const json = await r.json()
   if (!json.access_token) throw new Error(`token exchange failed: ${JSON.stringify(json)}`)
@@ -120,12 +128,15 @@ export function loginInteractive(opts: LoginOpts = {}): Promise<Creds> {
       } catch (e) { res.writeHead(500); res.end('exchange failed'); clearTimeout(timer); server.close(); reject(e as Error) }
     })
     server.on('error', (e) => { clearTimeout(timer); reject(e) })
-    server.listen(port, () => {
+    // Loopback only: the PKCE callback is for the local browser, never other interfaces.
+    server.listen(port, '127.0.0.1', () => {
       console.error(`[chirp-auth] sign in: ${authUrl}`)
       openBrowser(authUrl)
       timer = setTimeout(() => {
         server.close()
-        reject(new Error('sign-in timed out — re-run /chirp-auth'))
+        // Surface-neutral guidance: this file is shared by the Claude Code plugin, the
+        // OpenClaw plugin, and the host CLI.
+        reject(new Error('sign-in timed out — sign in again (in Claude Code: /chirp-auth; on other surfaces, re-run your Chirp sign-in)'))
       }, timeoutMs)
     })
   })
@@ -137,7 +148,12 @@ export async function getAccessToken(): Promise<string | null> {
   if (creds && !needsRefresh(creds, Date.now())) return creds.accessToken
   if (creds?.refreshToken) {
     try { const next = await refresh(creds.refreshToken); save(next); return next.accessToken } catch (e) {
-      console.error('[chirp-channel] token refresh failed —', String(e))
+      // Concurrent refresh race: refresh tokens rotate, so when several processes race, the
+      // losers fail. Another process may have already written fresh creds — re-read before
+      // giving up, and never overwrite the newer file on this failure path.
+      const latest = loadCreds()
+      if (latest && !needsRefresh(latest, Date.now())) return latest.accessToken
+      console.error('[chirp-auth] token refresh failed —', String(e))
     }
   }
   return null
