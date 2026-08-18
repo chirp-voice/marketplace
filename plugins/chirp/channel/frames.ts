@@ -28,7 +28,7 @@
 /** The kind of system behind this row. A free-form presentation tag on the `hello` frame — see
  *  `concierge/src/relay/frames.ts`. Never a routing key. Named rather than inlined so the send
  *  and the test that pins it agree by construction — the same shape
- *  `openclaw-plugin/channel/frames.ts` uses. */
+ *  `plugins/openclaw/channel/frames.ts` uses. */
 export const PROVIDER = 'claude-code'
 
 /** The channel `hello` — the frame that claims this session's row on the phone.

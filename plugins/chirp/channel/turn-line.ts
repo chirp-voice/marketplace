@@ -11,7 +11,7 @@ const BASH_CAP = 40
  * One transcript JSONL line, projected to the fields the concierge needs to interpret it.
  *
  * `TurnLine` is PROVIDER-NEUTRAL: it describes a conversational turn, not a Claude Code
- * artifact. `openclaw-plugin/channel/turn-line.ts` emits the same shape from OpenClaw
+ * artifact. `plugins/openclaw/channel/turn-line.ts` emits the same shape from OpenClaw
  * replies and it flows through the same concierge interpreter unchanged. Keep it that way —
  * a Claude-Code-specific field here forks the wire.
  *

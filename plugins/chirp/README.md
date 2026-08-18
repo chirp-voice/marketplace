@@ -16,7 +16,7 @@ assistant can connect to.
 ## Layout
 
 ```
-chirp-plugin/
+plugins/claude/
 ├── .claude-plugin/plugin.json       plugin manifest (channels binding)
 ├── .claude-plugin/marketplace.json  serves this dir as a one-plugin marketplace
 ├── .mcp.json                    registers chirp-channel (via ${CLAUDE_PLUGIN_ROOT})
@@ -34,15 +34,15 @@ Install deps once, then load the plugin straight from this directory for a
 session (no marketplace needed):
 
 ```bash
-cd chirp-plugin && npm install
-claude --plugin-dir ./chirp-plugin
+cd plugins/claude && npm install
+claude --plugin-dir ./plugins/claude
 ```
 
 Or register it as a local marketplace for a persistent install (this dir serves
 itself as a one-plugin marketplace via `.claude-plugin/marketplace.json`):
 
 ```
-/plugin marketplace add ./chirp-plugin
+/plugin marketplace add ./plugins/claude
 /plugin install chirp@chirp-plugin
 ```
 
@@ -66,7 +66,7 @@ export CHIRP_RELAY_URL=ws://localhost:8080/relay       # local concierge
 
 The public install path is the **`chirp-voice/marketplace`** GitHub repo, a
 read-only mirror published by `.github/workflows/plugin-publish.yml` on every
-push to `main` touching `chirp-plugin/**` or `marketplace/**`. The mirror is
+push to `main` touching `plugins/claude/**` or `marketplace/**`. The mirror is
 assembled from the repo-root `marketplace/` dir (the public marketplace.json +
 README) plus this dir's tracked files at `plugins/chirp/` (minus the
 self-serving dev `marketplace.json` below). Users install with:
@@ -113,5 +113,5 @@ This is the in-monorepo home for the plugin's source:
   swallowed into model context, not shown to the user) and fires on `startup|resume|clear`.
 - **Cache is version-pinned.** Installed plugins load from `~/.claude/plugins/cache/<mkt>/chirp/<version>/`.
   Edits to a checked-out source dir are ignored until `plugin.json` `version` bumps (then reinstall),
-  or use `claude --plugin-dir ./chirp-plugin` for live source during dev. Break-glass: delete the cache
+  or use `claude --plugin-dir ./plugins/claude` for live source during dev. Break-glass: delete the cache
   dir and reinstall.

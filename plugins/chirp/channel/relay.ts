@@ -9,8 +9,8 @@ import { getAccessToken } from "../auth/pkce-login.ts";
  * package-specific — the hello frame, the frame kinds acted on, the sign-in wording — arrives
  * through `RelayDeps`.
  *
- * BYTE-IDENTICAL by convention: this file exists in `openclaw-plugin/channel/` and
- * `chirp-plugin/channel/`, kept identical the same way `auth/pkce-login.ts` is (pinned by the
+ * BYTE-IDENTICAL by convention: this file exists in `plugins/openclaw/channel/` and
+ * `plugins/claude/channel/`, kept identical the same way `auth/pkce-login.ts` is (pinned by the
  * relay-identity test next to the pkce one). It may import only `ws`, `../auth/pkce-login.ts`
  * (itself byte-identical), and `./frames.ts` — the package's own wire vocabulary.
  *

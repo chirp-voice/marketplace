@@ -29,7 +29,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const FIXTURES_DIR = path.resolve(__dirname, '../../../fixtures')
+const FIXTURES_DIR = path.resolve(__dirname, '../../../../fixtures')
 
 interface TaskFrameFixture {
   [key: string]: unknown

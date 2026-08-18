@@ -59,7 +59,7 @@ if (!controllable) console.error('[chirp-channel] session not launched with --ch
 const tasks = new TaskTracker()
 
 // The socket lifecycle (connect / token / hello / capped-backoff reconnect) lives in the shared
-// channel/relay.ts — byte-identical with openclaw-plugin's copy — so a concierge deploy or
+// channel/relay.ts — byte-identical with plugins/openclaw's copy — so a concierge deploy or
 // network blip never orphans the session. This module wires the Claude Code side in: identity,
 // the hello, frame handling, and perm-request redelivery.
 let relayHandle: RelayHandle | null = null
